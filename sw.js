@@ -1,7 +1,7 @@
 /* Offline support: app files are served from cache and refreshed in the background.
    Bump VERSION after changing app files so phones pick up the update quickly. */
-const VERSION = 'ellipse-v4';
-const APP = ['./', 'index.html', 'styles.css', 'pricing.js', 'app.js', 'rates.json', 'manifest.webmanifest',
+const VERSION = 'ellipse-v5';
+const APP = ['./', 'index.html', 'styles.css', 'pricing.js', 'app.js', 'view3d.js', 'rates.json', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-180.png', 'assets/company_logo.png', 'assets/sign-and-seal.png'];
 const CDN = [
   'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css',
@@ -20,7 +20,7 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   const sameOrigin = url.origin === self.location.origin;
-  if (!sameOrigin && url.hostname !== 'cdnjs.cloudflare.com') return; // maps, NASA, price list: always network
+  if (!sameOrigin && url.hostname !== 'cdnjs.cloudflare.com' && url.hostname !== 'cdn.jsdelivr.net') return; // maps, NASA, price list: always network
   e.respondWith(caches.open(VERSION).then(async (cache) => {
     const hit = await cache.match(req, { ignoreSearch: sameOrigin });
     const net = fetch(req).then((res) => { if (res.ok) cache.put(req, res.clone()); return res; }).catch(() => hit);

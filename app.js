@@ -30,6 +30,7 @@ const PANEL_TYPES = [['monoperc_bifacial', 'MonoPERC Bifacial'], ['topcon_bifaci
 const PHASES = [['1phase', '1 Phase'], ['3phase', '3 Phase']];
 // Typical monthly irradiance shape (kWh/m²/day) until site data loads
 const DEFAULT_GHI = [4.3, 5.1, 6.0, 6.6, 6.7, 5.9, 5.0, 4.9, 5.3, 5.2, 4.6, 4.1];
+const CUBE_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2 3 7v10l9 5 9-5V7zm0 2.3 6.5 3.6L12 11.5 5.5 7.9zM5 9.6l6 3.3v6.8l-6-3.3zm8 10.1v-6.8l6-3.3v6.8z"/></svg>';
 const ESRI_TILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const LIVE_RATES_URL = 'https://ellipsesolarofficial.github.io/ellipse-solar-sales-platform/rates.json';
 const SHEET_URL = 'https://script.google.com/macros/s/AKfycbzs-81APX5QnQyuftPkB3lz6zlHunk79R8Gvx_FrnALhwHk6RrNIFJefnVZ2z5l6WDeYw/exec';
@@ -1028,7 +1029,8 @@ function ensureMapHost() {
     <div class="draw-hint" id="drawHint" hidden><span id="drawHintText"></span><button class="btn sm" id="undoPt">Undo</button><button class="btn sm accent" id="finishRoof">Finish</button></div>
     <div class="sun-dial" id="sunDial" hidden></div>
     <div class="shade-bar" id="shadeBar" hidden></div>
-    <div class="panel-bar" id="panelBar" hidden></div>`;
+    <div class="panel-bar" id="panelBar" hidden></div>
+    <button class="map-3d" id="map3d" data-open3d hidden title="3D Preview" aria-label="3D Preview">${CUBE_SVG}</button>`;
   return mapHost;
 }
 function mountMap(p) {
@@ -1051,9 +1053,10 @@ function mountMap(p) {
     $('#mapSearchBtn', host).onclick = doSearch;
     $('#mapSearch', host).onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } };
     $('#gpsBtn', host).onclick = locateMe;
+    $('#map3d', host).onclick = () => { if (cur) V3D.open(cur); };
     $('#undoPt', host).onclick = (e) => { L.DomEvent.stop(e); if (!drawing) return; drawing.points.pop(); updateDrawHint(); drawRoofs(); };
     $('#finishRoof', host).onclick = (e) => { L.DomEvent.stop(e); finishDrawing(); };
-    ['.map-tools', '#drawHint', '#mapResults', '#sunDial', '#shadeBar', '#panelBar'].forEach((s) => { L.DomEvent.disableClickPropagation($(s, host)); L.DomEvent.disableScrollPropagation($(s, host)); });
+    ['.map-tools', '#drawHint', '#mapResults', '#sunDial', '#shadeBar', '#panelBar', '#map3d'].forEach((s) => { L.DomEvent.disableClickPropagation($(s, host)); L.DomEvent.disableScrollPropagation($(s, host)); });
   }
   $('#mapSearch', host).value = '';
   $('#mapResults', host).hidden = true;
@@ -1189,6 +1192,8 @@ function drawRoofs() {
     addVertices(ob, shape);
   });
   drawManualPanels(r);
+  const b3 = mapHost && $('#map3d', mapHost);
+  if (b3) b3.hidden = !!drawing || !cur.site.roofs.some((x) => x.points.length >= 3);
   drawShadows();
 }
 
@@ -1303,7 +1308,8 @@ function renderRoofList() {
   const roofs = cur.site.roofs;
   box.innerHTML = `
     <div class="card-head" style="margin:8px 0 0"><h3>Roofs (${roofs.filter((x) => x.points.length >= 3).length})</h3>
-      <button class="btn ${roofs.length ? '' : 'accent'}" id="addRoof" ${drawing ? 'disabled' : ''}>+ ${roofs.length ? 'Add another roof' : 'Draw roof'}</button></div>
+      <div class="row">${roofs.some((x) => x.points.length >= 3) ? `<button class="btn accent" data-open3d>${CUBE_SVG} 3D Preview</button>` : ''}
+      <button class="btn ${roofs.length ? '' : 'accent'}" id="addRoof" ${drawing ? 'disabled' : ''}>+ ${roofs.length ? 'Add another roof' : 'Draw roof'}</button></div></div>
     ${roofs.length ? roofs.map((roof, i) => {
       const lay = r.layouts[i] || { area: 0, count: 0, fit: 0 };
       return `<div class="roof-item" data-rid="${roof.id}">
@@ -1769,7 +1775,7 @@ function lineChartSvg(years, net) {
 }
 
 /* ---- Step 4: proposal ---- */
-function stepProposal() {
+function stepProposal(p) {
   return `<div id="reviewBox"></div>
   <div class="card">
     <h2>Send to customer</h2>
@@ -1777,6 +1783,7 @@ function stepProposal() {
       <button class="btn primary" id="pdfShare">Share PDF</button>
       <button class="btn" id="pdfDl">Download PDF</button>
       <button class="btn wa" id="waMsg">WhatsApp summary</button>
+      ${p.site.roofs.some((x) => x.points.length >= 3) ? `<button class="btn accent" data-open3d>${CUBE_SVG} 3D Preview</button>` : ''}
     </div>
     <p class="hint" style="margin-top:8px">On phones, <b>Share PDF</b> opens WhatsApp, email and more. On PCs it downloads the file.${db.settings.sheet.enabled ? ' Each PDF is also logged to the team Google Sheet.' : ''}</p>
   </div>`;
@@ -2016,6 +2023,29 @@ async function buildPdf(p) {
       T(num(v), x + cbw * 0.33, y + chH - bh - 1.5, { size: 6.5, color: muted, align: 'center' });
       T(MONTHS[i], x + cbw * 0.33, y + chH + 4.5, { size: 7.5, color: muted, align: 'center' });
     });
+  }
+
+  /* 3D design model + shadow analysis (skipped if 3D cannot render on this device) */
+  if (typeof V3D !== 'undefined' && p.site.roofs.some((x) => x.points.length >= 3)) {
+    try {
+      const sv = p.view3d || {};
+      const [hero] = await V3D.snapshots(p, [{ month: sv.month ?? 3, hour: sv.hour ?? 11, view: sv.cam ? 'saved' : 'iso' }], 1400, 700);
+      const times = [8, 11, 14, 17];
+      const grid = await V3D.snapshots(p, times.map((h) => ({ month: 3, hour: h, view: 'top' })), 1400, 795);
+      y = header('3D design & shadow analysis');
+      y = h2('3D design model', y);
+      doc.addImage(hero, 'JPEG', M, y, CWm, CWm / 2);
+      y += CWm / 2 + 4;
+      T('Your building and solar plant in 3D, with panels on the mounting structure. Final design is confirmed after the site survey.', M, y, { size: 8, color: muted, maxWidth: CWm });
+      y += 9;
+      y = h2('Shadow analysis (21 April)', y);
+      const gw = (CWm - 6) / 2, gh = gw * (795 / 1400);
+      times.forEach((h, i) => {
+        const gx = M + (i % 2) * (gw + 6), gy = y + Math.floor(i / 2) * (gh + 10);
+        T(fmtHour(h).toUpperCase(), gx + gw / 2, gy + 1, { bold: true, size: 9, align: 'center' });
+        doc.addImage(grid[i], 'JPEG', gx, gy + 3, gw, gh);
+      });
+    } catch (e) { console.warn('3D images skipped', e); }
   }
 
   /* Page 3 — BOM & commercial offer */
@@ -2370,6 +2400,8 @@ function renderSettings() {
 }
 
 /* ---------------- Boot ---------------- */
+// any [data-open3d] button opens the 3D Preview of the proposal being edited
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-open3d]'); if (b && cur && b.id !== 'map3d') { e.preventDefault(); V3D.open(cur); } });
 (async function boot() {
   load();
   $('#view').innerHTML = `<div class="empty"><span class="spin"></span><p style="margin-top:10px">Loading price list…</p></div>`;

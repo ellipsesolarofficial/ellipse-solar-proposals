@@ -14,10 +14,13 @@ It runs in the browser on phones and PCs and can be installed like an app.
    **Shadow analysis:** a time slider and Play button on the map move the sun along its path for any month.
    Shadows of the obstacles and the parapet move over the terrace, shaded panels turn red, an hour-by-hour chart shows when
    the terrace gets the most sun, and a yearly shade map colours the roof green (full sun) to red (often shaded).
+   **3D Preview:** the building in 3D on satellite ground with panels on elevated structures, a compass,
+   Summer / Rain / Winter and month, and a time slider with Play for moving sun and shadows. Share or download the image,
+   and "Use in PDF" to pick the view printed in the proposal.
 3. **System & price:** the same options and the same prices as the Ellipse sales portal: On-Grid/Off-Grid/Hybrid, brand,
    DCR/Non-DCR/Mixed, Tata kits, batteries, floors, S/D codes, central and state subsidy, and the loan/EMI calculator.
    Managers (access code) also get per-watt pricing and the full cost breakdown.
-4. **Proposal:** a branded PDF (letterhead, site layout photo, bill of material, commercial offer, savings, loan, terms, seal),
+4. **Proposal:** a branded PDF (letterhead, site layout photo, 3D design model, shadow analysis at 8 am / 11 am / 2 pm / 5 pm, bill of material, commercial offer, savings, loan, terms, seal),
    shared to WhatsApp from the phone. Each PDF is logged to the team Google Sheet, the same as the portal.
 5. **Dashboard:** pipeline, won/lost and per-salesperson numbers.
 
