@@ -1050,11 +1050,7 @@ function mountMap(p) {
     map.on('moveend', () => { if (!cur) return; const c = map.getCenter(); cur.site.center = [c.lat, c.lng]; cur.site.zoom = map.getZoom(); save(); });
     $('#mapSearchBtn', host).onclick = doSearch;
     $('#mapSearch', host).onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } };
-    $('#gpsBtn', host).onclick = () => {
-      if (!navigator.geolocation) return toast('Location not available on this device');
-      toast('Finding your location…');
-      navigator.geolocation.getCurrentPosition((pos) => map.setView([pos.coords.latitude, pos.coords.longitude], 19), () => toast('Could not get location. Allow location access and try again.'), { enableHighAccuracy: true, timeout: 15000 });
-    };
+    $('#gpsBtn', host).onclick = locateMe;
     $('#undoPt', host).onclick = (e) => { L.DomEvent.stop(e); if (!drawing) return; drawing.points.pop(); updateDrawHint(); drawRoofs(); };
     $('#finishRoof', host).onclick = (e) => { L.DomEvent.stop(e); finishDrawing(); };
     ['.map-tools', '#drawHint', '#mapResults', '#sunDial', '#shadeBar', '#panelBar'].forEach((s) => { L.DomEvent.disableClickPropagation($(s, host)); L.DomEvent.disableScrollPropagation($(s, host)); });
@@ -1067,6 +1063,41 @@ function mountMap(p) {
   else { map.setView([26.9124, 75.7873], 12); if (p.customer.address) $('#mapSearch', host).value = p.customer.address.replace(/\s+/g, ' ').trim(); }
   setTimeout(() => map.invalidateSize(), 60);
   drawRoofs();
+}
+// "My location" button: clear reasons when it cannot work, and a blue dot where you are
+let meLayer = null;
+function locateMe() {
+  const btn = $('#gpsBtn');
+  if (!window.isSecureContext) {
+    toast('Location works only on the https link (or localhost on this computer). On this Wi-Fi link, search the address instead.', 7000);
+    return;
+  }
+  if (!navigator.geolocation) { toast('This browser cannot share location. Search the address instead.', 6000); return; }
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>';
+  const done = () => { btn.disabled = false; btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm9 3h-2.06A7 7 0 0 0 13 5.06V3h-2v2.06A7 7 0 0 0 5.06 11H3v2h2.06A7 7 0 0 0 11 18.94V21h2v-2.06A7 7 0 0 0 18.94 13H21zm-9 6a5 5 0 1 1 0-10 5 5 0 0 1 0 10z"/></svg>'; };
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      done();
+      const ll = [pos.coords.latitude, pos.coords.longitude], acc = Math.round(pos.coords.accuracy || 0);
+      if (meLayer) meLayer.remove();
+      meLayer = L.layerGroup([
+        L.circle(ll, { radius: Math.max(acc, 3), color: '#2563eb', weight: 1, fillOpacity: 0.12, interactive: false }),
+        L.circleMarker(ll, { radius: 7, color: '#fff', weight: 2.5, fillColor: '#2563eb', fillOpacity: 1, interactive: false }),
+      ]).addTo(map);
+      map.setView(ll, acc > 150 ? 17 : 20);
+      toast(acc > 150 ? `Location found, but only accurate to about ${acc} m. Check the building on the map.` : `You are here (accurate to about ${acc} m).`, 4500);
+    },
+    (err) => {
+      done();
+      const msg = err.code === 1
+        ? 'Location permission is blocked. Allow location for this site in the browser (address bar → site settings), and turn on Location for the browser in phone or Mac settings.'
+        : err.code === 3
+          ? 'Finding your location took too long. Try again outdoors or near a window, or search the address.'
+          : 'Location is unavailable. Turn on GPS / Location Services, or search the address.';
+      toast(msg, 8000);
+    },
+    { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 });
 }
 async function doSearch() {
   const q = $('#mapSearch').value.trim();
