@@ -210,6 +210,8 @@ function upgradeProposal(p) {
   p.pricing = deepMerge({ commission: 0, discount: 0, priceMode: 'components', perWatt: null, stateSubsidy: false, loan: { on: false, type: 'upto2l', repay: 'lowerEmi', years: 10 } }, p.pricing || {});
   p.customer = { freeUnits: false, ...p.customer };
   if (!Array.isArray(p.site.obstacles)) p.site.obstacles = [];
+  if (!Array.isArray(p.site.panels)) p.site.panels = [];
+  if (!p.design.layoutMode) p.design.layoutMode = 'auto';
   if (p.design.parapet == null) p.design.parapet = 0.9;
 }
 
@@ -255,7 +257,7 @@ async function loadRates({ force = false } = {}) {
 function toLocal(points) {
   const lat0 = sum(points.map((p) => p[0])) / points.length;
   const lon0 = sum(points.map((p) => p[1])) / points.length;
-  const kx = 111320 * Math.cos((lat0 * Math.PI) / 180), ky = 110540;
+  const kx = 111320 * Math.cos((lat0 * Math.PI) / 180), ky = 111320;
   const fwd = ([la, lo]) => [(lo - lon0) * kx, (la - lat0) * ky];
   return { pts: points.map(fwd), fwd, back: ([x, y]) => [y / ky + lat0, x / kx + lon0] };
 }
@@ -278,8 +280,103 @@ function distSeg([px, py], [ax, ay], [bx, by]) {
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 const rot = ([x, y], a) => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a)];
-// Typical module sizes: up to ~590 W = 2278 x 1134 mm; larger TOPCon = 2382 x 1134 mm
-const panelDims = (watt) => (watt > 590 ? [2.382, 1.134] : [2.278, 1.134]);
+// Every panel is drawn as 8 ft x 4 ft (2.4384 m x 1.2192 m), as the team designs on site
+const PANEL_LEN = 2.4384, PANEL_WID = 1.2192;
+const panelDims = () => [PANEL_LEN, PANEL_WID];
+
+/* ---- Hand-placed panels (manual layout): oriented rectangles in local metres ---- */
+const SNAP_DIST = 0.35, PANEL_GAP = 0.02;
+const pnSize = (pn) => (pn.landscape ? [PANEL_LEN, PANEL_WID] : [PANEL_WID, PANEL_LEN]); // [along angle, across]
+function pnLocal(pn, F) { const [x, y] = F.to([pn.lat, pn.lng]); const [su, sv] = pnSize(pn); return { x, y, a: pn.angle, hu: su / 2, hv: sv / 2 }; }
+function obbCorners(o) {
+  const c = Math.cos(o.a), s = Math.sin(o.a);
+  return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, j]) => [o.x + i * o.hu * c - j * o.hv * s, o.y + i * o.hu * s + j * o.hv * c]);
+}
+function inObb([px, py], o) {
+  const dx = px - o.x, dy = py - o.y, c = Math.cos(o.a), s = Math.sin(o.a);
+  return Math.abs(dx * c + dy * s) < o.hu - 1e-3 && Math.abs(-dx * s + dy * c) < o.hv - 1e-3;
+}
+function obbOverlap(A, B) {
+  const ca = obbCorners(A), cb = obbCorners(B);
+  return [A.a, A.a + Math.PI / 2, B.a, B.a + Math.PI / 2].every((t) => {
+    const ax = [Math.cos(t), Math.sin(t)];
+    const pa = ca.map((q) => q[0] * ax[0] + q[1] * ax[1]), pb = cb.map((q) => q[0] * ax[0] + q[1] * ax[1]);
+    return Math.max(...pa) > Math.min(...pb) + 2e-3 && Math.max(...pb) > Math.min(...pa) + 2e-3;
+  });
+}
+function siteGeom(p, F) {
+  return {
+    roofs: p.site.roofs.filter((r) => r.points.length >= 3).map((r) => r.points.map(F.to)),
+    obs: (p.site.obstacles || []).filter((o) => o.points.length >= 3).map((o) => o.points.map(F.to)),
+  };
+}
+// A panel may sit only fully on one roof, off obstacles, and not touching another panel
+function panelFits(o, others, G) {
+  const cs = obbCorners(o);
+  if (!G.roofs.some((poly) => cs.every((q) => inPoly(q, poly)))) return false;
+  if (G.obs.some((poly) => cs.some((q) => inPoly(q, poly)) || poly.some((q) => inObb(q, o)))) return false;
+  return !others.some((b) => obbOverlap(o, b));
+}
+// Magnetic snap: line up with a nearby parallel panel (same row/column, edge to edge)
+function snapPanel(o, others) {
+  let best = null;
+  others.forEach((B) => {
+    const d = o.a - B.a, sd = Math.abs(Math.sin(d)), cd = Math.abs(Math.cos(d));
+    if (Math.min(sd, cd) > 0.06) return; // not parallel
+    if (Math.hypot(o.x - B.x, o.y - B.y) > 6) return;
+    const eu = cd * o.hu + sd * o.hv, ev = sd * o.hu + cd * o.hv; // o's half-extent along B's axes
+    const c = Math.cos(B.a), s = Math.sin(B.a), dx = o.x - B.x, dy = o.y - B.y;
+    const u = dx * c + dy * s, v = -dx * s + dy * c;
+    const near = (val, list) => list.reduce((acc, t) => (Math.abs(val - t) < SNAP_DIST && (acc == null || Math.abs(val - t) < Math.abs(val - acc)) ? t : acc), null);
+    const uT = near(u, [B.hu + eu + PANEL_GAP, -(B.hu + eu + PANEL_GAP), 0, B.hu - eu, eu - B.hu]);
+    const vT = near(v, [B.hv + ev + PANEL_GAP, -(B.hv + ev + PANEL_GAP), 0, B.hv - ev, ev - B.hv]);
+    if (uT == null && vT == null) return;
+    const nu = uT ?? u, nv = vT ?? v;
+    const score = (uT != null ? Math.abs(u - uT) : SNAP_DIST) + (vT != null ? Math.abs(v - vT) : SNAP_DIST);
+    if (!best || score < best.score) best = { score, o: { ...o, a: B.a + Math.round(d / (Math.PI / 2)) * (Math.PI / 2), x: B.x + nu * c - nv * s, y: B.y + nu * s + nv * c } };
+  });
+  return best ? best.o : null;
+}
+function longestEdgeAngle(poly) {
+  let best = 0, ang = 0;
+  poly.forEach((a, i) => { const b = poly[(i + 1) % poly.length], l = Math.hypot(b[0] - a[0], b[1] - a[1]); if (l > best) { best = l; ang = Math.atan2(b[1] - a[1], b[0] - a[0]); } });
+  return ang;
+}
+function rectToPanel(c, F) {
+  const q = c.map(F.to);
+  const e1 = [q[1][0] - q[0][0], q[1][1] - q[0][1]], e2 = [q[2][0] - q[1][0], q[2][1] - q[1][1]];
+  const [la, lo] = F.back([sum(q.map((v) => v[0])) / 4, sum(q.map((v) => v[1])) / 4]);
+  return { id: uid(), lat: la, lng: lo, angle: Math.atan2(e1[1], e1[0]), landscape: Math.hypot(...e1) > Math.hypot(...e2) };
+}
+function autoRects(p) {
+  const prev = p.design.layoutMode;
+  p.design.layoutMode = 'auto';
+  const saved = p.design.panelCount;
+  const r = compute(p);
+  p.design.layoutMode = prev;
+  p.design.panelCount = saved;
+  return { r, rects: r.layouts.flatMap((l) => l.rects) };
+}
+// Fill missing panels from the automatic layout, skipping spots already taken
+function autoPlaceRest(p) {
+  const F = shadeFrame(p), G = siteGeom(p, F);
+  const { r } = autoRects(p);
+  const need = r.count - p.site.panels.length;
+  if (need <= 0) return 0;
+  const prevMode = p.design.layoutMode, prevPanels = p.site.panels;
+  // the auto layout limited to the quote picks centre-first; ask for every spot that fits instead
+  p.design.layoutMode = 'auto';
+  const all = p.site.roofs.flatMap((roof) => layoutRoof(roof, 0, p.design.mount, p.site.obstacles).rects);
+  p.design.layoutMode = prevMode;
+  const placed = prevPanels.map((pn) => pnLocal(pn, F));
+  let added = 0;
+  for (const c of all) {
+    if (added >= need) break;
+    const pn = rectToPanel(c, F), o = pnLocal(pn, F);
+    if (panelFits(o, placed, G)) { prevPanels.push(pn); placed.push(o); added++; }
+  }
+  return added;
+}
 
 const layoutMemo = new Map();
 function layoutRoof(roof, watt, mount, obstacles = []) {
@@ -428,8 +525,25 @@ function compute(p) {
   try { q = Q.quote(params); } catch (e) { err = e.message; }
   const count = q ? q.panelCount : 0;
   const kwp = q ? q.actualSystemCapacity : 0;
-  let left = count;
-  const layouts = raw.map((l) => { const take = Math.min(l.rects.length, left); left -= take; return { area: l.area, fit: l.count, rects: l.rects.slice(0, take), count: take }; });
+  let layouts;
+  const manual = d.mode === 'map' && d.layoutMode === 'manual' && p.site.roofs.some((x) => x.points.length >= 3);
+  if (manual) {
+    // hand-placed panels, grouped under the roof they sit on
+    const F = shadeFrame(p), G = siteGeom(p, F);
+    layouts = raw.map((l) => ({ area: l.area, fit: l.count, rects: [], ids: [], count: 0 }));
+    (p.site.panels || []).forEach((pn) => {
+      const o = pnLocal(pn, F);
+      let i = G.roofs.findIndex((poly) => inPoly([o.x, o.y], poly));
+      if (i < 0) i = 0;
+      const li = p.site.roofs.indexOf(p.site.roofs.filter((x) => x.points.length >= 3)[i]);
+      const L0 = layouts[li >= 0 ? li : 0];
+      if (!L0) return;
+      L0.rects.push(obbCorners(o).map(F.back)); L0.ids.push(pn.id); L0.count++;
+    });
+  } else {
+    let left = count;
+    layouts = raw.map((l) => { const take = Math.min(l.rects.length, left); left -= take; return { area: l.area, fit: l.count, rects: l.rects.slice(0, take), count: take }; });
+  }
   const placed = sum(layouts.map((l) => l.count));
 
   // Generation: Ellipse standard (units/kW/day) or site satellite data
@@ -753,6 +867,8 @@ function renderEditor(p, step) {
 }
 // When a choice changes, clear the dependent choices so they re-default
 const RESETS = {
+  // switching to manual starts from the automatic layout, so the user only adjusts it
+  'design.layoutMode': (p, v) => { selPanel = null; if (v === 'manual' && !p.site.panels.length && p.site.roofs.some((x) => x.points.length >= 3)) { const F = shadeFrame(p); p.site.panels = autoRects(p).rects.map((c) => rectToPanel(c, F)); } },
   'design.systemType': (p, v) => { p.design.inverterTierKey = ''; p.design.kitSku = ''; p.design.battery.on = v !== 'ongrid'; },
   'design.panelBrand': (p) => { p.design.panelWatt = null; p.design.kitSku = ''; p.design.panelCount = null; p.design.systemKw = Q.isKitBrand(p.design.panelBrand) ? null : p.design.systemKw; },
   'design.panelCategory': (p) => { p.design.panelCount = null; p.design.kitSku = ''; p.design.dcrKw = null; },
@@ -865,8 +981,8 @@ function stepRoof(p) {
       <div id="mapSlot"></div>
       <div id="shadeCard" class="shade-card"></div>
       <div class="grid grid-2" style="margin-top:14px">
-        ${field('Mounting (for panel spacing)', 'design.mount', { options: Object.entries(MOUNTS), attrs: 'data-relayout' })}
-        <div class="hint" style="align-self:center">Edge setback ${L.setback} m · row gap ${L.rowGapElevated} m elevated / ${L.rowGapFlat} m low. Managers can change these in Settings.</div>
+        ${field('Panel layout', 'design.layoutMode', { options: [['auto', 'Automatic (fill the roof)'], ['manual', 'Manual (tap, drag & arrange panels)']], rerender: true, hint: p.design.layoutMode === 'manual' ? 'Tap the roof to add a panel. Hold and drag to move; it snaps in line with nearby panels and cannot overlap them. Tap a panel to rotate or delete it.' : 'Panels are 8 ft × 4 ft. Switch to Manual to arrange them yourself.' })}
+        ${field('Mounting (for panel spacing)', 'design.mount', { options: Object.entries(MOUNTS), attrs: 'data-relayout', hint: `Auto layout: edge setback ${L.setback} m · row gap ${L.rowGapElevated} m elevated / ${L.rowGapFlat} m low.` })}
       </div>
       <div id="roofCap" style="margin-top:12px"></div>
       <div id="roofList" style="margin-top:4px"></div>`
@@ -885,6 +1001,13 @@ function afterRoof(p) {
     if (!box) return;
     if (!r.fit) { box.innerHTML = ''; return; }
     const fitKw = (r.fit * r.meta.watt) / 1000;
+    if (cur.design.layoutMode === 'manual') {
+      const placed = cur.site.panels.length;
+      box.innerHTML = placed === r.count
+        ? `<div class="callout ok">All <b>${r.count} panels</b> for the ${kw(r.q?.systemSize || 0)} kW system are placed (${r.meta.watt} W each, drawn 8 ft × 4 ft).</div>`
+        : `<div class="callout warn">${placed < r.count ? `Place <b>${r.count - placed} more</b>` : `Remove <b>${placed - r.count}</b>`}: the ${kw(r.q?.systemSize || 0)} kW system needs <b>${r.count} panels</b> of ${r.meta.watt} W. ${placed} placed so far.</div>`;
+      return;
+    }
     box.innerHTML = r.count > r.fit
       ? `<div class="callout warn">The roof fits <b>${r.fit} panels (${kw(fitKw)} kWp)</b> but the quote needs <b>${r.count}</b>. Add another roof, try landscape, or pick a smaller size in the next step.</div>`
       : `<div class="callout ok">The roof fits up to <b>${r.fit} panels (${kw(fitKw)} kWp)</b> of ${r.meta.watt} W. The quote uses <b>${r.count}</b>.</div>`;
@@ -904,7 +1027,8 @@ function ensureMapHost() {
     <div class="map-results" id="mapResults" hidden></div>
     <div class="draw-hint" id="drawHint" hidden><span id="drawHintText"></span><button class="btn sm" id="undoPt">Undo</button><button class="btn sm accent" id="finishRoof">Finish</button></div>
     <div class="sun-dial" id="sunDial" hidden></div>
-    <div class="shade-bar" id="shadeBar" hidden></div>`;
+    <div class="shade-bar" id="shadeBar" hidden></div>
+    <div class="panel-bar" id="panelBar" hidden></div>`;
   return mapHost;
 }
 function mountMap(p) {
@@ -920,6 +1044,8 @@ function mountMap(p) {
     map.createPane('shadePane').style.zIndex = 450; // shadows above roofs and panels, below markers and labels
     map.getPane('shadePane').style.pointerEvents = 'none';
     shadowLayer = L.layerGroup().addTo(map);
+    panelLayer = L.layerGroup().addTo(map);
+    map.on('zoomend', () => { if (cur && cur.design.layoutMode === 'manual') drawManualPanels(compute(cur)); });
     map.on('click', onMapClick);
     map.on('moveend', () => { if (!cur) return; const c = map.getCenter(); cur.site.center = [c.lat, c.lng]; cur.site.zoom = map.getZoom(); save(); });
     $('#mapSearchBtn', host).onclick = doSearch;
@@ -931,7 +1057,7 @@ function mountMap(p) {
     };
     $('#undoPt', host).onclick = (e) => { L.DomEvent.stop(e); if (!drawing) return; drawing.points.pop(); updateDrawHint(); drawRoofs(); };
     $('#finishRoof', host).onclick = (e) => { L.DomEvent.stop(e); finishDrawing(); };
-    ['.map-tools', '#drawHint', '#mapResults', '#sunDial', '#shadeBar'].forEach((s) => { L.DomEvent.disableClickPropagation($(s, host)); L.DomEvent.disableScrollPropagation($(s, host)); });
+    ['.map-tools', '#drawHint', '#mapResults', '#sunDial', '#shadeBar', '#panelBar'].forEach((s) => { L.DomEvent.disableClickPropagation($(s, host)); L.DomEvent.disableScrollPropagation($(s, host)); });
   }
   $('#mapSearch', host).value = '';
   $('#mapResults', host).hidden = true;
@@ -997,7 +1123,13 @@ function updateDrawHint() {
 }
 function onMapClick(e) {
   $('#mapResults').hidden = true;
-  if (!drawing) return;
+  if (!drawing) {
+    if (cur && cur.design.mode === 'map' && cur.design.layoutMode === 'manual') {
+      if (selPanel) { selPanel = null; drawRoofs(); return; } // first tap just deselects
+      addPanelAt(e.latlng);
+    }
+    return;
+  }
   drawing.points.push([e.latlng.lat, e.latlng.lng]);
   updateDrawHint();
   drawRoofs();
@@ -1006,13 +1138,14 @@ function drawRoofs() {
   if (!map || !cur || !roofLayer) return;
   roofLayer.clearLayers();
   const r = compute(cur);
+  const manual = cur.design.layoutMode === 'manual';
   cur.site.roofs.forEach((roof, i) => {
     const pts = roof.points;
     let shape = null;
     if (pts.length >= 3) shape = L.polygon(pts, { color: '#E8621F', weight: 2.5, fillOpacity: 0.12, interactive: false }).addTo(roofLayer);
     else if (pts.length === 2) shape = L.polyline(pts, { color: '#E8621F', weight: 2.5, dashArray: '6 6', interactive: false }).addTo(roofLayer);
     const lay = r.layouts[i];
-    if (lay && roof !== drawing) lay.rects.forEach((c) => L.polygon(c, { color: '#bfdbfe', weight: 0.7, fillColor: '#1e3a8a', fillOpacity: 0.88, interactive: false }).addTo(roofLayer));
+    if (lay && roof !== drawing && !manual) lay.rects.forEach((c) => L.polygon(c, { color: '#bfdbfe', weight: 0.7, fillColor: '#1e3a8a', fillOpacity: 0.88, interactive: false }).addTo(roofLayer));
     if (pts.length >= 3 && roof !== drawing) L.tooltip({ permanent: true, direction: 'center', className: 'roof-label', interactive: false }).setLatLng(roofCentroid(pts)).setContent(`${esc(roof.name)} · ${lay ? lay.count : 0}/${lay ? lay.fit : 0} panels`).addTo(roofLayer);
     addVertices(roof, shape);
   });
@@ -1024,7 +1157,106 @@ function drawRoofs() {
     if (pts.length >= 3 && ob !== drawing) L.tooltip({ permanent: true, direction: 'center', className: 'roof-label obs-label', interactive: false }).setLatLng(roofCentroid(pts)).setContent(`${esc(ob.name)} · ${num(n0(ob.height), 1)} m`).addTo(roofLayer);
     addVertices(ob, shape);
   });
+  drawManualPanels(r);
   drawShadows();
+}
+
+/* ---- Manual panels on the map: tap to add, hold & drag to move, snap, no overlap ---- */
+let panelLayer = null, selPanel = null;
+const panelMarkers = {};
+function drawManualPanels(r) {
+  if (!panelLayer) return;
+  panelLayer.clearLayers();
+  Object.keys(panelMarkers).forEach((k) => delete panelMarkers[k]);
+  const on = cur && cur.design.mode === 'map' && cur.design.layoutMode === 'manual' && cur.site.roofs.some((x) => x.points.length >= 3);
+  renderPanelBar(r, on);
+  if (!on) return;
+  const F = shadeFrame(cur), G = siteGeom(cur, F);
+  const z = map.getZoom();
+  cur.site.panels.forEach((pn) => {
+    const mpp = (40075016.686 * Math.cos(pn.lat * DEG)) / 2 ** (z + 8);
+    const [su, sv] = pnSize(pn);
+    const w = su / mpp, h = sv / mpp, box = Math.ceil(Math.hypot(w, h)) + 4;
+    const icon = L.divIcon({
+      className: 'pn-icon', iconSize: [box, box],
+      html: `<div class="pn ${selPanel === pn.id ? 'sel' : ''}" style="width:${w}px;height:${h}px;transform:translate(-50%,-50%) rotate(${-pn.angle}rad)"></div>`,
+    });
+    const m = L.marker([pn.lat, pn.lng], { icon, draggable: true, keyboard: false, autoPan: true, zIndexOffset: selPanel === pn.id ? 1000 : 0 }).addTo(panelLayer);
+    panelMarkers[pn.id] = m;
+    let last = { lat: pn.lat, lng: pn.lng };
+    m.on('dragstart', () => { stopPlay(); selPanel = pn.id; m.getElement()?.querySelector('.pn')?.classList.add('sel', 'moving'); });
+    m.on('drag', (e) => {
+      const ll = e.target.getLatLng();
+      const others = cur.site.panels.filter((x) => x !== pn).map((x) => pnLocal(x, F));
+      const [x, y] = F.to([ll.lat, ll.lng]);
+      const o = { ...pnLocal(pn, F), x, y };
+      const snapped = snapPanel(o, others);
+      let ok = null, didSnap = false;
+      if (snapped && panelFits(snapped, others, G)) { ok = snapped; didSnap = true; }
+      else if (panelFits(o, others, G)) ok = o;
+      const el = m.getElement()?.querySelector('.pn');
+      if (ok) {
+        const [la, lo] = F.back([ok.x, ok.y]);
+        pn.lat = la; pn.lng = lo; pn.angle = ok.a;
+        last = { lat: la, lng: lo };
+        if (el) { el.classList.toggle('snapped', didSnap); el.classList.remove('blocked'); el.style.transform = `translate(-50%,-50%) rotate(${-pn.angle}rad)`; }
+      } else if (el) el.classList.add('blocked');
+      m.setLatLng([last.lat, last.lng]);
+    });
+    // redraw after Leaflet has finished its own drag/click handling of this marker
+    m.on('dragend', () => { persist(cur); setTimeout(() => { drawRoofs(); refreshLive(); }, 0); });
+    m.on('click', () => { selPanel = selPanel === pn.id ? null : pn.id; setTimeout(drawRoofs, 0); });
+  });
+}
+function renderPanelBar(r, on) {
+  const bar = mapHost && $('#panelBar', mapHost);
+  if (!bar) return;
+  bar.hidden = !on || !!drawing;
+  if (!on) return;
+  const placed = cur.site.panels.length, need = r.count;
+  const sel = cur.site.panels.find((x) => x.id === selPanel);
+  const status = placed < need ? `<b>${placed} / ${need}</b> panels placed · tap the roof to add`
+    : placed > need ? `<b style="color:var(--bad)">${placed} / ${need}</b> · remove ${placed - need} extra`
+    : `<b style="color:var(--ok)">${placed} / ${need}</b> panels placed ✓`;
+  bar.innerHTML = `<span class="pb-status">${status}</span>
+    ${sel ? `<button class="btn sm" data-pb="rotate">Rotate 90°</button><button class="btn sm danger" data-pb="delete">Delete</button>`
+      : `${placed < need ? '<button class="btn sm" data-pb="fill">Auto-place rest</button>' : ''}${placed ? '<button class="btn sm ghost" data-pb="clear">Clear all</button>' : ''}`}`;
+  $$('[data-pb]', bar).forEach((b) => (b.onclick = (e) => {
+    L.DomEvent.stop(e);
+    const act = b.dataset.pb;
+    if (act === 'delete') { cur.site.panels = cur.site.panels.filter((x) => x !== sel); selPanel = null; }
+    if (act === 'rotate') {
+      const F = shadeFrame(cur), G = siteGeom(cur, F);
+      const turned = { ...sel, landscape: !sel.landscape };
+      const others = cur.site.panels.filter((x) => x !== sel).map((x) => pnLocal(x, F));
+      if (panelFits(pnLocal(turned, F), others, G)) sel.landscape = !sel.landscape;
+      else toast('No room to rotate here. Move the panel first.');
+    }
+    if (act === 'fill') { const n = autoPlaceRest(cur); toast(n ? `Placed ${n} more panel${n > 1 ? 's' : ''}` : 'No free space found for more panels'); }
+    if (act === 'clear') { if (!confirm('Remove all placed panels?')) return; cur.site.panels = []; selPanel = null; }
+    persist(cur); drawRoofs(); refreshLive();
+  }));
+}
+function addPanelAt(latlng) {
+  const r = compute(cur);
+  if (cur.site.panels.length >= r.count) { toast(`All ${r.count} panels are placed. Increase the system capacity to add more.`); return; }
+  const F = shadeFrame(cur), G = siteGeom(cur, F);
+  const [x, y] = F.to([latlng.lat, latlng.lng]);
+  const roofI = G.roofs.findIndex((poly) => inPoly([x, y], poly));
+  if (roofI < 0) { toast('Tap inside a roof to place a panel'); return; }
+  const others = cur.site.panels.map((pn) => pnLocal(pn, F));
+  // new panels follow the nearest placed panel's direction, else the roof's longest edge
+  let near = null, nd = Infinity;
+  cur.site.panels.forEach((pn) => { const o = pnLocal(pn, F), dd = Math.hypot(o.x - x, o.y - y); if (dd < nd) { nd = dd; near = pn; } });
+  const pn = { id: uid(), lat: latlng.lat, lng: latlng.lng, angle: near ? near.angle : longestEdgeAngle(G.roofs[roofI]), landscape: near ? near.landscape : false };
+  const o = pnLocal(pn, F);
+  const snapped = snapPanel(o, others);
+  const pick = snapped && panelFits(snapped, others, G) ? snapped : panelFits(o, others, G) ? o : null;
+  if (!pick) { toast('No room for a panel here (roof edge, obstacle or another panel)'); return; }
+  [pn.lat, pn.lng] = F.back([pick.x, pick.y]);
+  pn.angle = pick.a;
+  cur.site.panels.push(pn);
+  persist(cur); drawRoofs(); refreshLive();
 }
 function addVertices(item, shape) {
   item.points.forEach((ll, j) => {
@@ -1074,7 +1306,7 @@ function renderRoofList() {
       updateDrawHint(); persist(cur); drawRoofs(); renderRoofList(); refreshLive();
     };
   });
-  $$('.roof-item', box).forEach((el) => {
+  $$('.roof-item[data-rid]', box).forEach((el) => {
     const roof = cur.site.roofs.find((x) => x.id === el.dataset.rid);
     $('[data-orient]', el).onchange = (e) => { roof.orientation = e.target.value; persist(cur); drawRoofs(); renderRoofList(); refreshLive(); };
     $('[data-zoom]', el).onclick = () => map.fitBounds(L.latLngBounds(roof.points), { maxZoom: 21, padding: [40, 40] });
@@ -1284,12 +1516,15 @@ function drawShadows() {
   } else {
     polys.forEach((sp) => L.polygon(sp.map(F.back), { ...opts, stroke: false, fillColor: '#0b1220', fillOpacity: 0.42 }).addTo(shadowLayer));
     let shadedPanels = 0;
-    r.layouts.forEach((l) => l.rects.forEach((c) => {
+    r.layouts.forEach((l) => l.rects.forEach((c, k) => {
       const loc = c.map(F.to);
       const ctr = [sum(loc.map((q) => q[0])) / 4, sum(loc.map((q) => q[1])) / 4];
-      if ([...loc, ctr].some((q) => polys.some((sp) => inPoly(q, sp)))) {
+      const hit = [...loc, ctr].some((q) => polys.some((sp) => inPoly(q, sp)));
+      const el = l.ids && panelMarkers[l.ids[k]]?.getElement()?.querySelector('.pn');
+      if (el) el.classList.toggle('shaded', hit);
+      if (hit) {
         shadedPanels++;
-        L.polygon(c, { ...opts, color: '#ef4444', weight: 2.5, fill: false }).addTo(shadowLayer);
+        if (!el) L.polygon(c, { ...opts, color: '#ef4444', weight: 2.5, fill: false }).addTo(shadowLayer);
       }
     }));
     const sunlit = 1 - shadedShare(S.pts, polys);

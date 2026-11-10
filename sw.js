@@ -1,6 +1,6 @@
 /* Offline support: app files are served from cache and refreshed in the background.
    Bump VERSION after changing app files so phones pick up the update quickly. */
-const VERSION = 'ellipse-v2';
+const VERSION = 'ellipse-v3';
 const APP = ['./', 'index.html', 'styles.css', 'pricing.js', 'app.js', 'rates.json', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-180.png', 'assets/company_logo.png', 'assets/sign-and-seal.png'];
 const CDN = [

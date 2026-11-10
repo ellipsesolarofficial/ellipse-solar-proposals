@@ -7,6 +7,9 @@ It runs in the browser on phones and PCs and can be installed like an app.
 
 1. **Customer:** details, monthly bill (JVVNL tariff, with or without 100 free units) and the recommended size.
 2. **Roof:** find the house on a satellite map, tap the roof corners, and panels are laid out automatically.
+   Panels are drawn 8 ft × 4 ft; how many are needed comes from the system capacity and panel wattage.
+   **Manual layout:** tap the roof to add a panel, hold and drag to move it. Panels cannot overlap each other, the roof edge
+   or obstacles, and they snap edge-to-edge and in line with nearby panels. Tap a panel to rotate (90°) or delete it.
    Add obstacles (water tank, mumty, taller neighbour, tree) with their height. Panels are kept off them.
    **Shadow analysis:** a time slider and Play button on the map move the sun along its path for any month.
    Shadows of the obstacles and the parapet move over the terrace, shaded panels turn red, an hour-by-hour chart shows when
