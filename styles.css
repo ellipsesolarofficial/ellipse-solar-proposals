@@ -303,3 +303,28 @@ code { font-size: .82em; background: #f1f5f9; padding: 1px 5px; border-radius: 5
   #mapHost .leaflet-control-attribution { font-size: 9px; }
   #mapHost .leaflet-control-layers { display: none; }
 }
+
+/* ---------- Hand-placed panels ---------- */
+.pn-icon { pointer-events: none !important; background: none; border: none; }
+.pn {
+  position: absolute; left: 50%; top: 50%; box-sizing: border-box; pointer-events: auto; cursor: grab; touch-action: none;
+  background-color: #1e3a8a;
+  background-image: linear-gradient(rgba(191,219,254,.35) 1px, transparent 1px), linear-gradient(90deg, rgba(191,219,254,.35) 1px, transparent 1px);
+  background-size: 100% 16.66%, 33.33% 100%;
+  border: 1.5px solid #dbeafe; border-radius: 1px; box-shadow: 0 1px 3px rgba(0,0,0,.45);
+  transition: box-shadow .12s, border-color .12s;
+}
+.pn.sel { border-color: #E8621F; box-shadow: 0 0 0 2px #E8621F, 0 2px 8px rgba(0,0,0,.5); }
+.pn.moving { cursor: grabbing; opacity: .92; }
+.pn.snapped { border-color: #22c55e; box-shadow: 0 0 0 2px #22c55e; }
+.pn.blocked { border-color: #ef4444; box-shadow: 0 0 0 2px #ef4444; }
+.pn.shaded { box-shadow: 0 0 0 2.5px #ef4444; }
+.panel-bar {
+  position: absolute; z-index: 800; top: 56px; left: 54px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  background: rgba(255,255,255,.96); border-radius: 10px; padding: 6px 8px 6px 12px; box-shadow: 0 4px 16px rgba(0,0,0,.18); font-size: .85rem; max-width: calc(100% - 210px);
+}
+.panel-bar .btn { min-height: 32px; }
+@media (max-width: 640px) {
+  .panel-bar { left: 8px; right: 8px; max-width: none; top: 56px; }
+  .sun-dial { top: 112px; }
+}
