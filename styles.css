@@ -265,3 +265,41 @@ details.card > summary small { display: block; font-weight: 400; color: var(--mu
 .sidenav-foot .pill { display: inline-block; }
 code { font-size: .82em; background: #f1f5f9; padding: 1px 5px; border-radius: 5px; word-break: break-all; }
 .sum b { overflow-wrap: anywhere; }
+
+/* ---------- Shadow analysis ---------- */
+.shade-card:not(:empty) { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.shade-ctrl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.shade-ctrl select { width: auto; min-height: 40px; }
+.shade-time { font-size: 1.25rem; font-variant-numeric: tabular-nums; margin-left: auto; color: var(--navy); }
+#shadeHour { width: 100%; min-height: 0; padding: 0; border: none; accent-color: var(--accent); height: 28px; }
+#shadeHour:focus { outline: none; }
+.shade-scale { display: flex; justify-content: space-between; font-size: .72rem; color: var(--muted); margin: -2px 2px 10px; }
+.shade-info { font-size: .9rem; background: #f8fafc; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; line-height: 1.5; }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: .8rem; color: var(--muted); }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.sun-dial { position: absolute; z-index: 800; left: 10px; bottom: 26px; background: rgba(255,255,255,.94); border-radius: 12px; padding: 4px 4px 6px; box-shadow: var(--shadow); text-align: center; }
+.sun-dial svg { display: block; }
+.sun-dial .dl { font-size: 11px; font-weight: 700; fill: #475569; }
+.dial-cap { font-size: .72rem; font-weight: 700; color: var(--navy); }
+@media (max-width: 640px) { .sun-dial svg { width: 96px; height: 96px; } }
+.obs-fields { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.obs-fields > input { width: 190px; min-height: 38px; padding: 6px 10px; }
+.obs-h { display: flex; gap: 6px; align-items: center; font-size: .85rem; color: var(--muted); }
+.obs-h input { width: 76px; min-height: 38px; padding: 6px 8px; }
+.vtx-obs { border-color: #475569 !important; }
+.obs-label { background: rgba(51,65,85,.92); }
+.shade-bar { position: absolute; z-index: 800; left: 152px; right: 58px; bottom: 26px; background: rgba(255,255,255,.96); border-radius: 12px; padding: 8px 12px 2px; box-shadow: 0 4px 16px rgba(0,0,0,.18); }
+.shade-bar .shade-ctrl { margin-bottom: 0; }
+.shade-bar .shade-ctrl select, .shade-bar .btn { min-height: 34px; }
+.shade-bar .shade-scale { margin: -4px 2px 4px; }
+.shade-card:not(:empty) { margin-top: 12px; padding-top: 4px; border-top: none; }
+@media (max-width: 640px) {
+  .shade-bar { left: 8px; right: 8px; bottom: 8px; padding: 6px 10px 0; }
+  .sun-dial { bottom: auto; top: 60px; left: auto; right: 8px; }
+  .shade-time { font-size: 1.05rem; }
+}
+@media (max-width: 640px) {
+  .shade-bar { bottom: 26px; }
+  #mapHost .leaflet-control-attribution { font-size: 9px; }
+  #mapHost .leaflet-control-layers { display: none; }
+}

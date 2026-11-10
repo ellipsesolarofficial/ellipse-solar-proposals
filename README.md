@@ -7,6 +7,10 @@ It runs in the browser on phones and PCs and can be installed like an app.
 
 1. **Customer:** details, monthly bill (JVVNL tariff, with or without 100 free units) and the recommended size.
 2. **Roof:** find the house on a satellite map, tap the roof corners, and panels are laid out automatically.
+   Add obstacles (water tank, mumty, taller neighbour, tree) with their height. Panels are kept off them.
+   **Shadow analysis:** a time slider and Play button on the map move the sun along its path for any month.
+   Shadows of the obstacles and the parapet move over the terrace, shaded panels turn red, an hour-by-hour chart shows when
+   the terrace gets the most sun, and a yearly shade map colours the roof green (full sun) to red (often shaded).
 3. **System & price:** the same options and the same prices as the Ellipse sales portal: On-Grid/Off-Grid/Hybrid, brand,
    DCR/Non-DCR/Mixed, Tata kits, batteries, floors, S/D codes, central and state subsidy, and the loan/EMI calculator.
    Managers (access code) also get per-watt pricing and the full cost breakdown.
@@ -46,7 +50,7 @@ After changing app files, raise `VERSION` in `sw.js` so installed phones pick up
 ```
 python3 -m http.server 8000
 ```
-Then open http://localhost:8000. GPS location and sharing need HTTPS, or localhost.
+Then open http://localhost:8000. A ready-made demo proposal is at http://localhost:8000/#/demo. GPS location and sharing need HTTPS, or localhost.
 
 ## Free services used
 
