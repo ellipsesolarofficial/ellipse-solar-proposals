@@ -186,13 +186,20 @@ function newProposal() {
   return p;
 }
 // Sample proposal on a real Jaipur rooftop, for demos and training (#/demo)
+const DEMO_OBSTACLES = () => [
+  { id: uid(), kind: 'obstacle', name: 'Mumty (stair room)', height: 2.7, points: [[26.9057349, 75.7438617], [26.9057349, 75.7438919], [26.9057035, 75.7438919], [26.9057035, 75.7438617]] },
+  { id: uid(), kind: 'obstacle', name: 'Water tank', height: 1.8, points: [[26.905724, 75.7439539], [26.905724, 75.74397], [26.9057096, 75.74397], [26.9057096, 75.7439539]] },
+];
 function demoProposal() {
   const existing = db.proposals.find((x) => x.demo);
-  if (existing) return existing;
+  if (existing) {
+    if (!existing.site.obstacles || !existing.site.obstacles.length) { existing.site.obstacles = DEMO_OBSTACLES(); persist(existing); }
+    return existing;
+  }
   const p = newProposal();
   Object.assign(p, { demo: true, status: 'Draft' });
   Object.assign(p.customer, { name: 'Demo - Sharma Residence', phone: '9876543210', address: 'Vaishali Nagar, Jaipur', monthlyBill: 3500, notes: 'Demo proposal for training. Safe to delete.' });
-  p.site = { center: [26.90564, 75.74391], zoom: 20, roofs: [{ id: uid(), name: 'Roof 1', orientation: 'portrait', points: [[26.9057412, 75.7438547], [26.9057329, 75.7439801], [26.9055391, 75.743976], [26.9055463, 75.7438439]] }] };
+  p.site = { center: [26.90564, 75.74391], zoom: 20, roofs: [{ id: uid(), name: 'Roof 1', orientation: 'portrait', points: [[26.9057412, 75.7438547], [26.9057329, 75.7439801], [26.9055391, 75.743976], [26.9055463, 75.7438439]] }], obstacles: DEMO_OBSTACLES() };
   p.design.floors = 2;
   p.pricing.stateSubsidy = true;
   persist(p);
@@ -202,6 +209,8 @@ function upgradeProposal(p) {
   p.design = deepMerge(defaultDesign(), p.design || {});
   p.pricing = deepMerge({ commission: 0, discount: 0, priceMode: 'components', perWatt: null, stateSubsidy: false, loan: { on: false, type: 'upto2l', repay: 'lowerEmi', years: 10 } }, p.pricing || {});
   p.customer = { freeUnits: false, ...p.customer };
+  if (!Array.isArray(p.site.obstacles)) p.site.obstacles = [];
+  if (p.design.parapet == null) p.design.parapet = 0.9;
 }
 
 /* ---------------- Manager mode ---------------- */
@@ -247,7 +256,8 @@ function toLocal(points) {
   const lat0 = sum(points.map((p) => p[0])) / points.length;
   const lon0 = sum(points.map((p) => p[1])) / points.length;
   const kx = 111320 * Math.cos((lat0 * Math.PI) / 180), ky = 110540;
-  return { pts: points.map(([la, lo]) => [(lo - lon0) * kx, (la - lat0) * ky]), back: ([x, y]) => [y / ky + lat0, x / kx + lon0] };
+  const fwd = ([la, lo]) => [(lo - lon0) * kx, (la - lat0) * ky];
+  return { pts: points.map(fwd), fwd, back: ([x, y]) => [y / ky + lat0, x / kx + lon0] };
 }
 function polyArea(pts) {
   let a = 0;
@@ -272,13 +282,14 @@ const rot = ([x, y], a) => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) +
 const panelDims = (watt) => (watt > 590 ? [2.382, 1.134] : [2.278, 1.134]);
 
 const layoutMemo = new Map();
-function layoutRoof(roof, watt, mount) {
+function layoutRoof(roof, watt, mount, obstacles = []) {
   const L = db.settings.layout;
-  const key = JSON.stringify([roof.points, roof.orientation, mount, watt, L]);
+  const obs = obstacles.filter((o) => o.points && o.points.length >= 3);
+  const key = JSON.stringify([roof.points, roof.orientation, mount, watt, L, obs.map((o) => o.points)]);
   if (layoutMemo.has(key)) return layoutMemo.get(key);
   const out = { rects: [], area: 0, count: 0 };
   if (!roof.points || roof.points.length < 3) return out;
-  const { pts, back } = toLocal(roof.points);
+  const { pts, back, fwd } = toLocal(roof.points);
   out.area = polyArea(pts);
   let best = 0, ang = 0;
   pts.forEach((a, i) => {
@@ -295,7 +306,10 @@ function layoutRoof(roof, watt, mount) {
   const xs = rp.map((p) => p[0]), ys = rp.map((p) => p[1]);
   const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
   if ((maxX - minX) * (maxY - minY) > 200000) return out;
-  const okCorner = (c) => inPoly(c, rp) && edges.every(([a, b]) => distSeg(c, a, b) >= setback - 1e-6);
+  // obstacles (tank, mumty…) in the same rotated frame, kept clear by a small gap
+  const ob = obs.map((o) => o.points.map((q) => rot(fwd(q), -ang)));
+  const obClear = (c) => ob.every((poly) => !inPoly(c, poly) && poly.every((v, i) => distSeg(c, v, poly[(i + 1) % poly.length]) >= 0.3));
+  const okCorner = (c) => inPoly(c, rp) && edges.every(([a, b]) => distSeg(c, a, b) >= setback - 1e-6) && obClear(c);
   let bestRects = [];
   for (const fx of [0, 1 / 3, 2 / 3]) {
     for (const fy of [0, 0.5]) {
@@ -304,7 +318,8 @@ function layoutRoof(roof, watt, mount) {
         for (let x = minX + setback + fx * colPitch; x + pw <= maxX - setback + 1e-6; x += colPitch) {
           const c = [[x, y], [x + pw, y], [x + pw, y + ph], [x, y + ph]];
           if (!c.every(okCorner)) continue;
-          if (rp.some(([vx, vy]) => vx > x && vx < x + pw && vy > y && vy < y + ph)) continue;
+          const inRect = ([vx, vy]) => vx > x - 0.3 && vx < x + pw + 0.3 && vy > y - 0.3 && vy < y + ph + 0.3;
+          if (rp.some(([vx, vy]) => vx > x && vx < x + pw && vy > y && vy < y + ph) || ob.some((poly) => poly.some(inRect))) continue;
           rects.push(c);
         }
       }
@@ -401,7 +416,7 @@ function compute(p) {
   const S = db.settings, E = S.energy, d = p.design;
   const R = Q.rates();
   // roof capacity, using the panel wattage that will be quoted
-  const rawFor = (watt) => (d.mode === 'map' ? p.site.roofs.map((roof) => layoutRoof(roof, watt, d.mount)) : []);
+  const rawFor = (watt) => (d.mode === 'map' ? p.site.roofs.map((roof) => layoutRoof(roof, watt, d.mount, p.site.obstacles || [])) : []);
   let raw = rawFor(Q.defaultWattage(R.solarPanels[d.panelBrand] ? d.panelBrand : 'ina', d.panelType, 3));
   let fit = sum(raw.map((l) => l.count));
   const { params, meta } = buildParams(p, fit);
@@ -523,6 +538,7 @@ function route() {
     cur = null;
   }
   liveHook = null;
+  stopPlay();
   $$('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === (page === 'edit' ? 'new' : page)));
   if (!Q.rates()) { $('#view').innerHTML = `<div class="card empty"><h2>Price list not available</h2><p>Connect to the internet once so the app can download rates.json, then reload.</p><button class="btn primary" onclick="location.reload()">Reload</button></div>`; return; }
   if (page === 'new') { const p = newProposal(); location.replace(`#/edit/${p.id}/1`); return; }
@@ -763,6 +779,7 @@ function onBind(e) {
     if (cur.number) $('.page-head p').textContent = `${cur.number} · ${fmtDate(cur.createdAt)}`;
   }
   if (el.hasAttribute('data-rerender') && e.type === 'change') { const y = window.scrollY; renderEditor(cur, curStep); window.scrollTo(0, y); return; }
+  if (el.hasAttribute('data-shade')) { drawRoofs(); return; }
   if (el.hasAttribute('data-relayout')) { drawRoofs(); renderRoofList(); }
   refreshLive();
 }
@@ -846,6 +863,7 @@ function stepRoof(p) {
     </div>
     ${p.design.mode === 'map' ? `
       <div id="mapSlot"></div>
+      <div id="shadeCard" class="shade-card"></div>
       <div class="grid grid-2" style="margin-top:14px">
         ${field('Mounting (for panel spacing)', 'design.mount', { options: Object.entries(MOUNTS), attrs: 'data-relayout' })}
         <div class="hint" style="align-self:center">Edge setback ${L.setback} m · row gap ${L.rowGapElevated} m elevated / ${L.rowGapFlat} m low. Managers can change these in Settings.</div>
@@ -860,6 +878,8 @@ function afterRoof(p) {
   if (p.design.mode !== 'map') return;
   mountMap(p);
   renderRoofList();
+  renderShadeCard();
+  drawShadows();
   liveHook = (r) => {
     const box = $('#roofCap');
     if (!box) return;
@@ -882,7 +902,9 @@ function ensureMapHost() {
       <button class="btn" id="gpsBtn" title="Go to my location" aria-label="Go to my location"><svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm9 3h-2.06A7 7 0 0 0 13 5.06V3h-2v2.06A7 7 0 0 0 5.06 11H3v2h2.06A7 7 0 0 0 11 18.94V21h2v-2.06A7 7 0 0 0 18.94 13H21zm-9 6a5 5 0 1 1 0-10 5 5 0 0 1 0 10z"/></svg></button>
     </div>
     <div class="map-results" id="mapResults" hidden></div>
-    <div class="draw-hint" id="drawHint" hidden><span id="drawHintText"></span><button class="btn sm" id="undoPt">Undo</button><button class="btn sm accent" id="finishRoof">Finish</button></div>`;
+    <div class="draw-hint" id="drawHint" hidden><span id="drawHintText"></span><button class="btn sm" id="undoPt">Undo</button><button class="btn sm accent" id="finishRoof">Finish</button></div>
+    <div class="sun-dial" id="sunDial" hidden></div>
+    <div class="shade-bar" id="shadeBar" hidden></div>`;
   return mapHost;
 }
 function mountMap(p) {
@@ -893,7 +915,11 @@ function mountMap(p) {
     const sat = L.tileLayer(ESRI_TILES, { maxNativeZoom: 19, maxZoom: 21, attribution: 'Imagery © Esri, Maxar, Earthstar Geographics' }).addTo(map);
     const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxNativeZoom: 19, maxZoom: 21, attribution: '© OpenStreetMap contributors' });
     L.control.layers({ Satellite: sat, Streets: osm }, null, { position: 'bottomright' }).addTo(map);
+    map.attributionControl.setPrefix(false);
     roofLayer = L.layerGroup().addTo(map);
+    map.createPane('shadePane').style.zIndex = 450; // shadows above roofs and panels, below markers and labels
+    map.getPane('shadePane').style.pointerEvents = 'none';
+    shadowLayer = L.layerGroup().addTo(map);
     map.on('click', onMapClick);
     map.on('moveend', () => { if (!cur) return; const c = map.getCenter(); cur.site.center = [c.lat, c.lng]; cur.site.zoom = map.getZoom(); save(); });
     $('#mapSearchBtn', host).onclick = doSearch;
@@ -905,12 +931,12 @@ function mountMap(p) {
     };
     $('#undoPt', host).onclick = (e) => { L.DomEvent.stop(e); if (!drawing) return; drawing.points.pop(); updateDrawHint(); drawRoofs(); };
     $('#finishRoof', host).onclick = (e) => { L.DomEvent.stop(e); finishDrawing(); };
-    ['.map-tools', '#drawHint', '#mapResults'].forEach((s) => L.DomEvent.disableClickPropagation($(s, host)));
+    ['.map-tools', '#drawHint', '#mapResults', '#sunDial', '#shadeBar'].forEach((s) => { L.DomEvent.disableClickPropagation($(s, host)); L.DomEvent.disableScrollPropagation($(s, host)); });
   }
   $('#mapSearch', host).value = '';
   $('#mapResults', host).hidden = true;
   const pts = p.site.roofs.flatMap((r) => r.points);
-  if (pts.length) map.fitBounds(L.latLngBounds(pts), { maxZoom: 20, padding: [30, 30] });
+  if (pts.length) map.fitBounds(L.latLngBounds(pts), { maxZoom: 21, padding: [40, 40] });
   else if (p.site.center) map.setView(p.site.center, p.site.zoom || 18);
   else { map.setView([26.9124, 75.7873], 12); if (p.customer.address) $('#mapSearch', host).value = p.customer.address.replace(/\s+/g, ' ').trim(); }
   setTimeout(() => map.invalidateSize(), 60);
@@ -929,16 +955,29 @@ async function doSearch() {
     $$('button', box).forEach((b) => (b.onclick = () => { const x = list[+b.dataset.i]; map.setView([+x.lat, +x.lon], x.class === 'building' || x.type === 'house' ? 20 : 18); box.hidden = true; }));
   } catch (e) { box.innerHTML = `<div style="padding:12px" class="small">Search unavailable right now. Pan and zoom the map by hand.</div>`; }
 }
-function startDrawing() {
-  const roof = { id: uid(), name: `Roof ${cur.site.roofs.length + 1}`, points: [], orientation: 'portrait' };
-  cur.site.roofs.push(roof);
-  drawing = roof;
+function startDrawing(kind = 'roof') {
+  stopPlay();
+  let item;
+  if (kind === 'obstacle') {
+    item = { id: uid(), kind: 'obstacle', name: `Obstacle ${cur.site.obstacles.length + 1}`, points: [], height: 2 };
+    cur.site.obstacles.push(item);
+  } else {
+    item = { id: uid(), name: `Roof ${cur.site.roofs.length + 1}`, points: [], orientation: 'portrait' };
+    cur.site.roofs.push(item);
+  }
+  drawing = item;
   updateDrawHint();
   renderRoofList();
   if (map.getZoom() < 17) toast('Zoom in to the building first for accurate corners');
 }
 function stopDrawing() {
-  if (drawing && cur) { if (drawing.points.length < 3) cur.site.roofs = cur.site.roofs.filter((r) => r !== drawing); persist(cur); }
+  if (drawing && cur) {
+    if (drawing.points.length < 3) {
+      cur.site.roofs = cur.site.roofs.filter((r) => r !== drawing);
+      cur.site.obstacles = (cur.site.obstacles || []).filter((r) => r !== drawing);
+    }
+    persist(cur);
+  }
   drawing = null;
   if (mapHost) $('#drawHint', mapHost).hidden = true;
 }
@@ -952,7 +991,8 @@ function updateDrawHint() {
   if (!drawing) { h.hidden = true; return; }
   h.hidden = false;
   const n = drawing.points.length;
-  $('#drawHintText', mapHost).textContent = n < 3 ? `Tap corner ${n + 1} of the roof` : `${n} corners. Tap more or Finish`;
+  const what = drawing.kind === 'obstacle' ? 'the obstacle (tank, mumty, tree, building)' : 'the roof';
+  $('#drawHintText', mapHost).textContent = n < 3 ? `Tap corner ${n + 1} of ${what}` : `${n} corners. Tap more or Finish`;
   $('#undoPt', mapHost).disabled = n === 0;
 }
 function onMapClick(e) {
@@ -974,11 +1014,23 @@ function drawRoofs() {
     const lay = r.layouts[i];
     if (lay && roof !== drawing) lay.rects.forEach((c) => L.polygon(c, { color: '#bfdbfe', weight: 0.7, fillColor: '#1e3a8a', fillOpacity: 0.88, interactive: false }).addTo(roofLayer));
     if (pts.length >= 3 && roof !== drawing) L.tooltip({ permanent: true, direction: 'center', className: 'roof-label', interactive: false }).setLatLng(roofCentroid(pts)).setContent(`${esc(roof.name)} · ${lay ? lay.count : 0}/${lay ? lay.fit : 0} panels`).addTo(roofLayer);
-    pts.forEach((ll, j) => {
-      const m = L.marker(ll, { draggable: true, icon: L.divIcon({ className: 'vtx', iconSize: [18, 18] }), keyboard: false }).addTo(roofLayer);
-      m.on('drag', (ev) => { const q = ev.target.getLatLng(); roof.points[j] = [q.lat, q.lng]; if (shape) shape.setLatLngs(roof.points); });
-      m.on('dragend', () => { persist(cur); drawRoofs(); renderRoofList(); refreshLive(); });
-    });
+    addVertices(roof, shape);
+  });
+  (cur.site.obstacles || []).forEach((ob) => {
+    const pts = ob.points;
+    let shape = null;
+    if (pts.length >= 3) shape = L.polygon(pts, { color: '#475569', weight: 2, dashArray: '5 4', fillColor: '#64748b', fillOpacity: 0.45, interactive: false }).addTo(roofLayer);
+    else if (pts.length === 2) shape = L.polyline(pts, { color: '#475569', weight: 2, dashArray: '5 4', interactive: false }).addTo(roofLayer);
+    if (pts.length >= 3 && ob !== drawing) L.tooltip({ permanent: true, direction: 'center', className: 'roof-label obs-label', interactive: false }).setLatLng(roofCentroid(pts)).setContent(`${esc(ob.name)} · ${num(n0(ob.height), 1)} m`).addTo(roofLayer);
+    addVertices(ob, shape);
+  });
+  drawShadows();
+}
+function addVertices(item, shape) {
+  item.points.forEach((ll, j) => {
+    const m = L.marker(ll, { draggable: true, icon: L.divIcon({ className: item.kind === 'obstacle' ? 'vtx vtx-obs' : 'vtx', iconSize: [18, 18] }), keyboard: false }).addTo(roofLayer);
+    m.on('drag', (ev) => { const q = ev.target.getLatLng(); item.points[j] = [q.lat, q.lng]; if (shape) shape.setLatLngs(item.points); });
+    m.on('dragend', () => { persist(cur); drawRoofs(); renderRoofList(); refreshLive(); });
   });
 }
 function renderRoofList() {
@@ -999,12 +1051,33 @@ function renderRoofList() {
           <button class="btn sm" data-zoom ${roof.points.length ? '' : 'disabled'}>Zoom</button>
           <button class="btn sm danger" data-del>Delete</button>
         </div></div>`;
-    }).join('') : `<p class="hint">No roof yet. Search the address above, zoom in until the building fills the map, then tap <b>Draw roof</b>.</p>`}`;
-  $('#addRoof', box).onclick = startDrawing;
+    }).join('') : `<p class="hint">No roof yet. Search the address above, zoom in until the building fills the map, then tap <b>Draw roof</b>.</p>`}
+    ${roofs.some((x) => x.points.length >= 3) ? `
+    <div class="card-head" style="margin:18px 0 0"><div><h3>Shadow-casting obstacles (${cur.site.obstacles.filter((x) => x.points.length >= 3).length})</h3>
+      <p class="hint">Water tank, mumty / staircase room, taller neighbouring building, tree. Panels are kept off them, and their shadows are shown below.</p></div>
+      <button class="btn" id="addObs" ${drawing ? 'disabled' : ''}>+ Add obstacle</button></div>
+    ${cur.site.obstacles.map((ob, i) => `<div class="roof-item" data-oid="${ob.id}">
+        <div class="obs-fields"><input data-bind="site.obstacles.${i}.name" data-shade value="${esc(ob.name)}" aria-label="Obstacle name" />
+          <label class="obs-h"><input type="number" inputmode="decimal" step="any" data-num data-bind="site.obstacles.${i}.height" data-shade value="${esc(ob.height)}" aria-label="Height above roof" /> m above roof</label>
+          ${ob === drawing ? '<span class="pill Negotiation">drawing…</span>' : ''}</div>
+        <div class="ctrls"><button class="btn sm danger" data-del-obs>Delete</button></div></div>`).join('')}
+    <div style="max-width:260px;margin-top:10px">${field('Parapet wall height (m)', 'design.parapet', { type: 'number', attrs: 'data-shade', hint: 'Shadow of the roof\'s own boundary wall. 0 if none.' })}</div>` : ''}`;
+  $('#addRoof', box).onclick = () => startDrawing('roof');
+  if ($('#addObs', box)) $('#addObs', box).onclick = () => startDrawing('obstacle');
+  const sc = $('#shadeCard'), hasRoof = roofs.some((x) => x.points.length >= 3);
+  if (sc && hasRoof !== !!sc.innerHTML.trim()) { renderShadeCard(); drawShadows(); }
+  $$('[data-oid]', box).forEach((el) => {
+    const ob = cur.site.obstacles.find((x) => x.id === el.dataset.oid);
+    $('[data-del-obs]', el).onclick = () => {
+      if (drawing === ob) drawing = null;
+      cur.site.obstacles = cur.site.obstacles.filter((x) => x !== ob);
+      updateDrawHint(); persist(cur); drawRoofs(); renderRoofList(); refreshLive();
+    };
+  });
   $$('.roof-item', box).forEach((el) => {
     const roof = cur.site.roofs.find((x) => x.id === el.dataset.rid);
     $('[data-orient]', el).onchange = (e) => { roof.orientation = e.target.value; persist(cur); drawRoofs(); renderRoofList(); refreshLive(); };
-    $('[data-zoom]', el).onclick = () => map.fitBounds(L.latLngBounds(roof.points), { maxZoom: 20, padding: [30, 30] });
+    $('[data-zoom]', el).onclick = () => map.fitBounds(L.latLngBounds(roof.points), { maxZoom: 21, padding: [40, 40] });
     $('[data-del]', el).onclick = () => {
       if (roof.points.length >= 3 && !confirm(`Delete ${roof.name}?`)) return;
       if (drawing === roof) drawing = null;
@@ -1012,6 +1085,238 @@ function renderRoofList() {
       updateDrawHint(); persist(cur); drawRoofs(); renderRoofList(); refreshLive();
     };
   });
+}
+
+/* ---------------- Sun path & shadow analysis (2D, on the map) ---------------- */
+const DEG = Math.PI / 180;
+const DOY21 = [21, 52, 80, 111, 141, 172, 202, 233, 264, 294, 325, 355];
+const SHADE_HOURS = Array.from({ length: 27 }, (_, i) => 6 + i * 0.5); // 6:00 … 19:00
+// Sun elevation/azimuth on the 21st of a month at an IST clock time
+function sunAt(lat, lon, month, hourIST) {
+  const n = DOY21[month];
+  const decl = 23.45 * Math.sin((2 * Math.PI * (284 + n)) / 365) * DEG;
+  const B = (2 * Math.PI * (n - 81)) / 364;
+  const eot = 9.87 * Math.sin(2 * B) - 7.53 * Math.cos(B) - 1.5 * Math.sin(B); // minutes
+  const solar = hourIST + ((lon - 82.5) * 4 + eot) / 60;
+  const H = 15 * (solar - 12) * DEG, phi = lat * DEG;
+  const el = Math.asin(Math.sin(phi) * Math.sin(decl) + Math.cos(phi) * Math.cos(decl) * Math.cos(H));
+  const az = (Math.atan2(Math.sin(H), Math.cos(H) * Math.sin(phi) - Math.tan(decl) * Math.cos(phi)) + Math.PI + 2 * Math.PI) % (2 * Math.PI);
+  return { el, az };
+}
+const compassDir = (az) => ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(az / DEG / 45) % 8];
+const fmtHour = (h) => { const hh = Math.floor(h + 1e-6), mm = Math.round((h - hh) * 60); return `${((hh + 11) % 12) + 1}:${String(mm).padStart(2, '0')} ${hh < 12 ? 'am' : 'pm'}`; };
+function hull(points) {
+  const P = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo = [], up = [];
+  for (const p of P) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (const p of P.slice().reverse()) { while (up.length >= 2 && cross(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+  return lo.slice(0, -1).concat(up.slice(0, -1));
+}
+function shadeFrame(p) {
+  const [lat0, lon0] = siteCenter(p);
+  const kx = 111320 * Math.cos(lat0 * DEG), ky = 111320;
+  return { lat0, lon0, to: ([la, lo]) => [(lo - lon0) * kx, (la - lat0) * ky], back: ([x, y]) => [lat0 + y / ky, lon0 + x / kx] };
+}
+// Shadow polygons (local metres) cast on the roof plane by obstacles and the parapet
+function shadowPolys(p, F, s) {
+  if (s.el <= 0.02) return null;
+  const k = 1 / Math.tan(s.el);
+  const dx = -Math.sin(s.az) * k, dy = -Math.cos(s.az) * k; // shadow offset per metre of height
+  const out = [];
+  (p.site.obstacles || []).forEach((o) => {
+    const h = n0(o.height);
+    if (o.points.length < 3 || h <= 0) return;
+    const pts = o.points.map(F.to);
+    out.push(hull([...pts, ...pts.map(([x, y]) => [x + dx * h, y + dy * h])]));
+  });
+  const ph = n0(p.design.parapet);
+  if (ph > 0) p.site.roofs.filter((r) => r.points.length >= 3).forEach((r) => {
+    const pts = r.points.map(F.to);
+    pts.forEach((a, i) => {
+      const b = pts[(i + 1) % pts.length];
+      const mid = [(a[0] + b[0]) / 2 + dx * ph * 0.5, (a[1] + b[1]) / 2 + dy * ph * 0.5];
+      if (inPoly(mid, pts)) out.push([a, b, [b[0] + dx * ph, b[1] + dy * ph], [a[0] + dx * ph, a[1] + dy * ph]]);
+    });
+  });
+  return out;
+}
+const sampleMemo = new Map();
+// Grid of points over the usable roof (obstacle footprints excluded)
+function roofSamples(p, F) {
+  const key = JSON.stringify([p.site.roofs.map((r) => r.points), (p.site.obstacles || []).map((o) => o.points)]);
+  if (sampleMemo.has(key)) return sampleMemo.get(key);
+  const roofs = p.site.roofs.filter((r) => r.points.length >= 3).map((r) => r.points.map(F.to));
+  const obs = (p.site.obstacles || []).filter((o) => o.points.length >= 3).map((o) => o.points.map(F.to));
+  const area = sum(roofs.map(polyArea));
+  const step = Math.max(0.4, Math.sqrt(area / 700));
+  const pts = [];
+  roofs.forEach((poly) => {
+    const xs = poly.map((q) => q[0]), ys = poly.map((q) => q[1]);
+    for (let x = Math.min(...xs) + step / 2; x < Math.max(...xs); x += step)
+      for (let y = Math.min(...ys) + step / 2; y < Math.max(...ys); y += step)
+        if (inPoly([x, y], poly) && !obs.some((o) => inPoly([x, y], o))) pts.push([x, y]);
+  });
+  const res = { pts, step };
+  if (sampleMemo.size > 20) sampleMemo.clear();
+  sampleMemo.set(key, res);
+  return res;
+}
+const shadedShare = (pts, polys) => (pts.length ? pts.filter((q) => polys.some((sp) => inPoly(q, sp))).length / pts.length : 0);
+function dayProfile(p, F, month) {
+  const S = roofSamples(p, F);
+  return SHADE_HOURS.map((h) => {
+    const s = sunAt(F.lat0, F.lon0, month, h);
+    const polys = shadowPolys(p, F, s);
+    return { h, el: s.el, sunlit: polys ? 1 - shadedShare(S.pts, polys) : null };
+  });
+}
+// Share of the year's sunshine (weighted by sun height) each roof point loses to shade
+function yearShade(p, F) {
+  const S = roofSamples(p, F);
+  const shadedW = new Float64Array(S.pts.length);
+  let totalW = 0;
+  for (let m = 0; m < 12; m++) for (const h of SHADE_HOURS) {
+    const s = sunAt(F.lat0, F.lon0, m, h);
+    if (s.el <= 0.05) continue;
+    const w = Math.sin(s.el);
+    totalW += w;
+    const polys = shadowPolys(p, F, s);
+    S.pts.forEach((q, i) => { if (polys.some((sp) => inPoly(q, sp))) shadedW[i] += w; });
+  }
+  return { S, loss: Array.from(shadedW, (v) => (totalW ? v / totalW : 0)) };
+}
+
+const shade = { month: new Date().getMonth(), hour: 9, timer: null, yearMap: false };
+let shadowLayer = null;
+function stopPlay() {
+  if (shade.timer) { clearInterval(shade.timer); shade.timer = null; }
+  const b = $('#shadePlay');
+  if (b) b.textContent = '▶ Play';
+}
+function renderShadeCard() {
+  const box = $('#shadeCard');
+  if (!box || !cur) return;
+  if (!cur.site.roofs.some((r) => r.points.length >= 3)) { box.innerHTML = ''; return; }
+  const bar = mapHost && $('#shadeBar', mapHost);
+  if (bar) bar.innerHTML = `
+    <div class="shade-ctrl">
+      <button class="btn sm accent" id="shadePlay">${shade.timer ? '❚❚ Pause' : '▶ Play'}</button>
+      <select id="shadeMonth" aria-label="Date">${MONTHS.map((m, i) => `<option value="${i}" ${i === shade.month ? 'selected' : ''}>21 ${m}</option>`).join('')}</select>
+      <b id="shadeTime" class="shade-time">${fmtHour(shade.hour)}</b>
+    </div>
+    <input type="range" id="shadeHour" min="6" max="19" step="0.25" value="${shade.hour}" aria-label="Time of day" ${shade.yearMap ? 'disabled' : ''} />
+    <div class="shade-scale"><span>6 am</span><span>9</span><span>12 pm</span><span>3</span><span>6 pm</span></div>`;
+  box.innerHTML = `
+    <div class="card-head" style="margin-bottom:8px"><div><h2>Shadow analysis</h2><p class="hint">Drag the time slider on the map, or press Play, to watch the sun cross the sky and the shadows move over the terrace.</p></div>
+      <div class="seg"><button data-sm="day" class="${shade.yearMap ? '' : 'on'}">Hour by hour</button><button data-sm="year" class="${shade.yearMap ? 'on' : ''}">Yearly shade map</button></div></div>
+    <div id="shadeInfo" class="shade-info"></div>
+    <div id="shadeDay" class="chart"></div>
+    <div id="shadeBest" class="hint" style="margin-top:6px"></div>`;
+  $('#shadeMonth').onchange = (e) => { shade.month = +e.target.value; drawShadows(); };
+  $('#shadeHour').oninput = (e) => { stopPlay(); shade.hour = +e.target.value; drawShadows(); };
+  $$('[data-sm]', box).forEach((b) => (b.onclick = () => { stopPlay(); shade.yearMap = b.dataset.sm === 'year'; renderShadeCard(); drawShadows(); }));
+  $('#shadePlay').onclick = () => {
+    if (shade.timer) { stopPlay(); return; }
+    if (shade.yearMap) { shade.yearMap = false; renderShadeCard(); }
+    $('#shadePlay').textContent = '❚❚ Pause';
+    shade.timer = setInterval(() => {
+      shade.hour = shade.hour >= 19 ? 6 : Math.round((shade.hour + 0.1) * 100) / 100;
+      const r = $('#shadeHour');
+      if (!r) { stopPlay(); return; }
+      r.value = shade.hour;
+      drawShadows();
+    }, 90);
+  };
+}
+function drawDial(F, s, state) {
+  const dial = mapHost && $('#sunDial', mapHost);
+  if (!dial) return;
+  dial.hidden = false;
+  const R = 54, c = 64;
+  const P = (el, az) => { const r = R * (1 - Math.max(0, el) / (Math.PI / 2)); return [c + r * Math.sin(az), c - r * Math.cos(az)]; };
+  const path = [];
+  for (let h = 4; h <= 21; h += 0.25) { const q = sunAt(F.lat0, F.lon0, shade.month, h); if (q.el > 0) path.push(P(q.el, q.az)); }
+  const [sx, sy] = P(s.el, s.az);
+  dial.innerHTML = `<svg viewBox="0 0 128 128" width="128" height="128" aria-label="Sun path">
+    <circle cx="${c}" cy="${c}" r="${R}" fill="#f8fafc" stroke="#cbd5e1"/>
+    <circle cx="${c}" cy="${c}" r="${R * (1 - 30 / 90)}" fill="none" stroke="#e2e8f0"/><circle cx="${c}" cy="${c}" r="${R * (1 - 60 / 90)}" fill="none" stroke="#e2e8f0"/>
+    <line x1="${c}" y1="${c - R}" x2="${c}" y2="${c + R}" stroke="#e2e8f0"/><line x1="${c - R}" y1="${c}" x2="${c + R}" y2="${c}" stroke="#e2e8f0"/>
+    <text x="${c}" y="8" text-anchor="middle" class="dl">N</text><text x="${c}" y="126" text-anchor="middle" class="dl">S</text>
+    <text x="124" y="${c + 4}" text-anchor="end" class="dl">E</text><text x="4" y="${c + 4}" class="dl">W</text>
+    ${path.length > 1 ? `<polyline points="${path.map((q) => q.map((v) => v.toFixed(1)).join(',')).join(' ')}" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="3 3"/>` : ''}
+    ${s.el > 0 && !state.year ? `<line x1="${c}" y1="${c}" x2="${sx}" y2="${sy}" stroke="#f59e0b" stroke-width="1"/><circle cx="${sx}" cy="${sy}" r="8" fill="#fbbf24" stroke="#ea580c" stroke-width="2"/>` : ''}
+  </svg><div class="dial-cap">${state.year ? 'Sun path · 21 ' + MONTHS[shade.month] : s.el > 0 ? `${Math.round(s.el / DEG)}° high · ${compassDir(s.az)}` : 'Sun down'}</div>`;
+}
+function drawShadows() {
+  if (!map || !shadowLayer) return;
+  shadowLayer.clearLayers();
+  const dial = mapHost && $('#sunDial', mapHost), bar = mapHost && $('#shadeBar', mapHost);
+  const ready = cur && curStep === 2 && cur.design.mode === 'map' && cur.site.roofs.some((r) => r.points.length >= 3);
+  if (bar) bar.hidden = !ready || !!drawing || !bar.innerHTML.trim();
+  if (!ready || drawing) { if (dial) dial.hidden = true; if (!ready) return; }
+  const F = shadeFrame(cur);
+  const s = sunAt(F.lat0, F.lon0, shade.month, shade.hour);
+  const info = $('#shadeInfo'), dayBox = $('#shadeDay'), best = $('#shadeBest');
+  if ($('#shadeTime')) $('#shadeTime').textContent = shade.yearMap ? 'All year' : fmtHour(shade.hour);
+  drawDial(F, s, { year: shade.yearMap });
+  const opts = { pane: 'shadePane', interactive: false };
+
+  if (shade.yearMap) {
+    const { S, loss } = yearShade(cur, F);
+    const h = S.step / 2;
+    const col = (v) => (v < 0.03 ? '#16a34a' : v < 0.1 ? '#84cc16' : v < 0.2 ? '#facc15' : v < 0.35 ? '#f97316' : '#dc2626');
+    S.pts.forEach(([x, y], i) => L.polygon([[x - h, y - h], [x + h, y - h], [x + h, y + h], [x - h, y + h]].map(F.back), { ...opts, stroke: false, fillColor: col(loss[i]), fillOpacity: 0.55 }).addTo(shadowLayer));
+    const avg = loss.length ? sum(loss) / loss.length : 0;
+    const good = loss.length ? loss.filter((v) => v < 0.05).length / loss.length : 0;
+    if (info) info.innerHTML = `Across the whole year the terrace loses <b>${num(avg * 100, 1)}%</b> of its sunshine to shade. <b>${num(good * 100)}%</b> of the roof gets near-full sun (green).`;
+    if (dayBox) dayBox.innerHTML = `<div class="legend"><span><i style="background:#16a34a"></i>&lt;3% shade</span><span><i style="background:#84cc16"></i>3–10%</span><span><i style="background:#facc15"></i>10–20%</span><span><i style="background:#f97316"></i>20–35%</span><span><i style="background:#dc2626"></i>&gt;35%</span></div>`;
+    if (best) best.textContent = 'Place panels on the green area. Red areas are shaded for a large part of the year.';
+    return;
+  }
+
+  const polys = shadowPolys(cur, F, s);
+  const r = compute(cur);
+  const S = roofSamples(cur, F);
+  if (!polys) {
+    cur.site.roofs.filter((x) => x.points.length >= 3).forEach((x) => L.polygon(x.points, { ...opts, stroke: false, fillColor: '#0b1220', fillOpacity: 0.5 }).addTo(shadowLayer));
+    if (info) info.innerHTML = `<b>${fmtHour(shade.hour)}</b>: the sun is below the horizon.`;
+  } else {
+    polys.forEach((sp) => L.polygon(sp.map(F.back), { ...opts, stroke: false, fillColor: '#0b1220', fillOpacity: 0.42 }).addTo(shadowLayer));
+    let shadedPanels = 0;
+    r.layouts.forEach((l) => l.rects.forEach((c) => {
+      const loc = c.map(F.to);
+      const ctr = [sum(loc.map((q) => q[0])) / 4, sum(loc.map((q) => q[1])) / 4];
+      if ([...loc, ctr].some((q) => polys.some((sp) => inPoly(q, sp)))) {
+        shadedPanels++;
+        L.polygon(c, { ...opts, color: '#ef4444', weight: 2.5, fill: false }).addTo(shadowLayer);
+      }
+    }));
+    const sunlit = 1 - shadedShare(S.pts, polys);
+    if (info) info.innerHTML = `<b>${fmtHour(shade.hour)}</b> on 21 ${MONTHS[shade.month]} · sun <b>${Math.round(s.el / DEG)}°</b> high from the <b>${compassDir(s.az)}</b> · terrace in sunlight <b>${num(sunlit * 100)}%</b>${r.count ? ` · <span style="color:${shadedPanels ? 'var(--bad)' : 'var(--ok)'}">${shadedPanels} of ${r.count} panels shaded</span>` : ''}`;
+  }
+
+  // hour-by-hour sunlight on the terrace for the chosen date
+  const prof = dayProfile(cur, F, shade.month);
+  if (dayBox) {
+    const W = 600, H = 120, bw = W / prof.length;
+    dayBox.innerHTML = `<svg viewBox="0 0 ${W} ${H + 18}" role="img" aria-label="Sunlight on the terrace through the day">
+      ${prof.map((q, i) => {
+        const v = q.sunlit == null ? 0 : q.sunlit * Math.min(1, Math.sin(Math.max(0, q.el)) * 1.4);
+        const bh = Math.max(2, v * H), col = q.sunlit == null ? '#cbd5e1' : q.sunlit > 0.95 ? '#f59e0b' : q.sunlit > 0.8 ? '#fbbf24' : '#94a3b8';
+        const on = Math.abs(q.h - shade.hour) < 0.26;
+        return `<rect data-h="${q.h}" x="${i * bw + 1.5}" y="${H - bh}" width="${bw - 3}" height="${bh}" rx="2" fill="${col}" ${on ? 'stroke="#0F2A44" stroke-width="2.5"' : ''} style="cursor:pointer"><title>${fmtHour(q.h)}: ${q.sunlit == null ? 'sun down' : num(q.sunlit * 100) + '% of terrace in sun'}</title></rect>`;
+      }).join('')}
+      ${[6, 9, 12, 15, 18].map((h) => `<text x="${(h - 6) * 2 * bw + bw / 2}" y="${H + 14}" text-anchor="middle">${fmtHour(h).replace(':00', '')}</text>`).join('')}
+    </svg>`;
+    $$('rect[data-h]', dayBox).forEach((rc) => (rc.onclick = () => { stopPlay(); shade.hour = +rc.dataset.h; if ($('#shadeHour')) $('#shadeHour').value = shade.hour; drawShadows(); }));
+  }
+  if (best) {
+    const full = prof.filter((q) => q.sunlit != null && q.sunlit > 0.88 && q.el > 12 * DEG);
+    best.innerHTML = full.length
+      ? `Bar height = strength of sunshine on the terrace. <b>Best sun on 21 ${MONTHS[shade.month]}: ${fmtHour(full[0].h)} – ${fmtHour(full[full.length - 1].h + 0.5)}</b> (terrace about 90% or more in sun). Grey bars = significant shade.`
+      : 'Bar height = strength of sunshine on the terrace. The terrace is partly shaded for most of this day.';
+  }
 }
 
 /* ---- Step 3: system & price ---- */
@@ -1309,6 +1614,9 @@ async function siteImage(p, r) {
       const w = ctx.measureText(label).width + 16;
       ctx.fillStyle = 'rgba(15,42,68,0.9)'; ctx.fillRect(cx - w / 2, cy - 15, w, 30);
       ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(label, cx, cy);
+    });
+    (p.site.obstacles || []).filter((o) => o.points.length >= 3).forEach((o) => {
+      poly(o.points); ctx.fillStyle = 'rgba(71,85,105,0.55)'; ctx.fill(); ctx.setLineDash([6, 4]); ctx.lineWidth = 2; ctx.strokeStyle = '#334155'; ctx.stroke(); ctx.setLineDash([]);
     });
     ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.beginPath(); ctx.arc(CW - 50, 50, 30, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#0F2A44'; ctx.beginPath(); ctx.moveTo(CW - 50, 26); ctx.lineTo(CW - 60, 56); ctx.lineTo(CW - 40, 56); ctx.closePath(); ctx.fill();
