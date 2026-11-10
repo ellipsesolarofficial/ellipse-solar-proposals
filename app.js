@@ -185,6 +185,19 @@ function newProposal() {
   db.proposals.unshift(p);
   return p;
 }
+// Sample proposal on a real Jaipur rooftop, for demos and training (#/demo)
+function demoProposal() {
+  const existing = db.proposals.find((x) => x.demo);
+  if (existing) return existing;
+  const p = newProposal();
+  Object.assign(p, { demo: true, status: 'Draft' });
+  Object.assign(p.customer, { name: 'Demo - Sharma Residence', phone: '9876543210', address: 'Vaishali Nagar, Jaipur', monthlyBill: 3500, notes: 'Demo proposal for training. Safe to delete.' });
+  p.site = { center: [26.90564, 75.74391], zoom: 20, roofs: [{ id: uid(), name: 'Roof 1', orientation: 'portrait', points: [[26.9057412, 75.7438547], [26.9057329, 75.7439801], [26.9055391, 75.743976], [26.9055463, 75.7438439]] }] };
+  p.design.floors = 2;
+  p.pricing.stateSubsidy = true;
+  persist(p);
+  return p;
+}
 function upgradeProposal(p) {
   p.design = deepMerge(defaultDesign(), p.design || {});
   p.pricing = deepMerge({ commission: 0, discount: 0, priceMode: 'components', perWatt: null, stateSubsidy: false, loan: { on: false, type: 'upto2l', repay: 'lowerEmi', years: 10 } }, p.pricing || {});
@@ -513,6 +526,7 @@ function route() {
   $$('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === (page === 'edit' ? 'new' : page)));
   if (!Q.rates()) { $('#view').innerHTML = `<div class="card empty"><h2>Price list not available</h2><p>Connect to the internet once so the app can download rates.json, then reload.</p><button class="btn primary" onclick="location.reload()">Reload</button></div>`; return; }
   if (page === 'new') { const p = newProposal(); location.replace(`#/edit/${p.id}/1`); return; }
+  if (page === 'demo') { const p = demoProposal(); location.replace(`#/edit/${p.id}/${parts[1] || 2}`); return; }
   if (page === 'edit') {
     const p = getProposal(parts[1]);
     if (!p) { location.replace('#/proposals'); return; }
