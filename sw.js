@@ -1,8 +1,8 @@
 /* Offline support: app files are served from cache and refreshed in the background.
    Bump VERSION after changing app files so phones pick up the update quickly. */
-const VERSION = 'ellipse-v5';
+const VERSION = 'ellipse-v6';
 const APP = ['./', 'index.html', 'styles.css', 'pricing.js', 'app.js', 'view3d.js', 'rates.json', 'manifest.webmanifest',
-  'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-180.png', 'assets/company_logo.png', 'assets/sign-and-seal.png'];
+  'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-180.png', 'assets/company_logo.png'];
 const CDN = [
   'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css',
   'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js',

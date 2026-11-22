@@ -1915,7 +1915,7 @@ async function buildPdf(p) {
   const accent = hexRgb(C.color), navy = [15, 42, 68], ink = [15, 23, 42], muted = [100, 116, 139], line = [226, 232, 240];
   const W = 210, H = 297, M = 15, CWm = W - 2 * M;
   const logo = C.logo || (await assetDataUrl('assets/company_logo.png'));
-  const sign = C.signature || (await assetDataUrl('assets/sign-and-seal.png'));
+  const sign = C.signature || null; // no bundled signature: upload one in Settings → Company & branding
   const logoDim = logo ? await imgSize(logo) : null;
   const signDim = sign ? await imgSize(sign) : null;
   const site = await siteImage(p, r);
@@ -2204,7 +2204,7 @@ function renderSettings() {
   const priceSrc = ratesInfo.source === 'live' ? `<span class="pill Won">Live</span> loaded ${new Date(ratesInfo.at).toLocaleTimeString('en-IN')}`
     : ratesInfo.source === 'saved' ? `<span class="pill Negotiation">Saved copy</span> from ${fmtDate(ratesInfo.at)}` : '<span class="pill Lost">Bundled copy</span>';
   const imgPick = (label, key, def) => `<div><span class="small" style="font-weight:600;display:block;margin-bottom:6px">${label}</span>
-    <div class="row"><div class="logo-prev"><img src="${S.company[key] || def}" alt="${label}" /></div>
+    <div class="row"><div class="logo-prev">${(S.company[key] || def) ? `<img src="${S.company[key] || def}" alt="${label}" />` : '<span class="small">Not set: upload one</span>'}</div>
     ${mgr ? `<label class="btn sm">Change<input type="file" accept="image/*" data-img="${key}" hidden /></label>${S.company[key] ? `<button class="btn sm" data-img-reset="${key}">Use default</button>` : ''}` : ''}</div></div>`;
 
   $('#view').innerHTML = `
@@ -2231,7 +2231,7 @@ function renderSettings() {
         ${sf('Office address', 'company.address', { type: 'textarea' })} ${sf('Bank details (printed at the end)', 'company.bank', { type: 'textarea', ph: 'Bank name, A/c no., branch & IFSC' })}
         ${sf('Signatory (printed under the seal)', 'company.signatory')}
         <label class="field"><span>Brand colour</span><input type="color" data-sbind="company.color" value="${esc(S.company.color)}" style="padding:4px;height:44px" /></label>
-        ${imgPick('Logo', 'logo', 'assets/company_logo.png')} ${imgPick('Signature & seal', 'signature', 'assets/sign-and-seal.png')}
+        ${imgPick('Logo', 'logo', 'assets/company_logo.png')} ${imgPick('Signature & seal', 'signature', '')}
       </div>
     </details>
 
